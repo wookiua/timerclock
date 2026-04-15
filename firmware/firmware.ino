@@ -2,107 +2,89 @@
 #include <RTClib.h>
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
-// --- Configuration ---
-const char *ssid = "Timer_Clock_AP";
-const char *password = "12345678";
-
+// --- Settings ---
 RTC_DS3231 rtc;
 ESP8266WebServer server(80);
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
 
-const int BUTTON_PIN = D3; // Hardware reset button
-uint32_t eventTimestamp;   // Unix time of the last event
+const int BUTTON_PIN = D3; // Button for START and RESET
+uint32_t eventTimestamp;   // Storage for your event date
 
-// --- Helper: Padding for time strings (e.g. 5 -> 05) ---
-String pad(int value) {
-  if (value < 10) return "0" + String(value);
-  return String(value);
+// Helper for 05:01:09 format
+String pad(int v) { return (v < 10) ? "0" + String(v) : String(v); }
+
+void updateScreen(int d, int h, int m, int s) {
+  display.clearDisplay();
+  display.setTextSize(1); // Standard simple size
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  
+  display.println("EVENT TIMER");
+  display.println("---------------------");
+  display.print("Days: ");    display.println(d);
+  display.print("Hours: ");   display.println(h);
+  display.print("Minutes: "); display.println(m);
+  display.print("Seconds: "); display.println(s);
+  
+  display.display();
 }
 
-// --- Web Interface: Main Page ---
 void handleRoot() {
   DateTime now = rtc.now();
   uint32_t diff = now.unixtime() - eventTimestamp;
   
-  // Basic calculation for the web display
-  int days = diff / 86400;
-  int hours = (diff % 86400) / 3600;
-  int minutes = (diff % 3600) / 60;
-  int seconds = diff % 60;
-  
-  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
-  html += "<title>Event Counter</title></head><body>";
-  html += "<h1>Time Since Last Event</h1>";
-  html += "<h2>" + String(days) + "d " + String(hours) + "h " + String(minutes) + "m " + String(seconds) + "s</h2>";
-  html += "<hr><p>Current RTC Time: " + pad(now.hour()) + ":" + pad(now.minute()) + "</p>";
-  html += "<p><button onclick=\"location.href='/reset'\">Reset Counter Now</button></p>";
-  html += "</body></html>";
+  // Simple HTML interface
+  String html = "<h1>Event Tracker</h1>";
+  html += "<h2>Passed: " + String(diff / 86400) + " days</h2>";
+  html += "<p><a href='/reset'><button>RESTART NOW</button></a></p>";
+  html += "<form action='/set'><input type='date' name='d'><input type='submit' value='SET DATE'></form>";
   
   server.send(200, "text/html", html);
 }
 
-// --- Web Interface: Manual Reset/Set Time ---
 void handleReset() {
-  DateTime now = rtc.now();
-  eventTimestamp = now.unixtime();
+  eventTimestamp = rtc.now().unixtime();
   EEPROM.put(0, eventTimestamp);
   EEPROM.commit();
-  
-  server.send(200, "text/plain", "Counter Reset Successfully!");
-  Serial.println("Reset via Web Interface");
+  server.send(Header("Location", "/"), 303, ""); // Redirect back to home
 }
 
 void setup() {
-  Serial.begin(115200);
   EEPROM.begin(512);
-  
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   
-  // Initialize I2C and RTC
-  if (!rtc.begin()) {
-    Serial.println("RTC Module Not Found!");
-    while (1);
-  }
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  rtc.begin();
 
-  // Load event time from EEPROM
   EEPROM.get(0, eventTimestamp);
-  
-  // Handle case if EEPROM was empty (first boot)
-  if (eventTimestamp == 0xFFFFFFFF || eventTimestamp == 0) {
-    eventTimestamp = rtc.now().unixtime();
-    EEPROM.put(0, eventTimestamp);
-    EEPROM.commit();
-  }
+  if (eventTimestamp == 0 || eventTimestamp == 0xFFFFFFFF) eventTimestamp = rtc.now().unixtime();
 
-  // Start Access Point
-  WiFi.softAP(ssid, password);
-  Serial.print("Access Point Started. IP: ");
-  Serial.println(WiFi.softAPIP());
-
-  // Define Server Routes
+  WiFi.softAP("My_Event_Timer", "12345678");
   server.on("/", handleRoot);
   server.on("/reset", handleReset);
   server.begin();
-  Serial.println("HTTP Server Started");
 }
 
 void loop() {
   server.handleClient();
 
-  // --- Physical Button Logic ---
+  DateTime now = rtc.now();
+  uint32_t diff = now.unixtime() - eventTimestamp;
+  
+  // Update screen with single font size
+  updateScreen(diff / 86400, (diff % 86400) / 3600, (diff % 3600) / 60, diff % 60);
+
+  // Physical Button Logic (Start/Reset)
   if (digitalRead(BUTTON_PIN) == LOW) {
-    delay(50); // Debounce
+    delay(50);
     if (digitalRead(BUTTON_PIN) == LOW) {
-      DateTime now = rtc.now();
-      eventTimestamp = now.unixtime();
-      
+      eventTimestamp = rtc.now().unixtime();
       EEPROM.put(0, eventTimestamp);
       EEPROM.commit();
-      
-      Serial.println("Hardware Reset Triggered via Button!");
-      
-      // Visual feedback or wait for release
-      while(digitalRead(BUTTON_PIN) == LOW) { delay(10); }
+      while(digitalRead(BUTTON_PIN) == LOW);
     }
   }
 }
